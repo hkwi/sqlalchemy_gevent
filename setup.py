@@ -5,7 +5,7 @@ setup(name="sqlalchemy_gevent",
 	url="https://github.com/hkwi/sqlalchemy_gevent",
 	author="Hiroaki KAWAI",
 	author_email="hiroaki.kawai@gmail.com",
-	packages=find_packages(),
+	py_modules=["sqlalchemy_gevent",],
 	install_requires = ["sqlalchemy", "gevent>=1.0"],
 	entry_points = ''' 
 [sqlalchemy.dialects]
