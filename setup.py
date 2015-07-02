@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name="sqlalchemy_gevent",
-	version = '0.1',
+	version = '0.2',
 	url="https://github.com/hkwi/sqlalchemy_gevent",
 	author="Hiroaki KAWAI",
 	author_email="hiroaki.kawai@gmail.com",

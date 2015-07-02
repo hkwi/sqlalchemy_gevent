@@ -31,7 +31,7 @@ class ConnectionProxy(Proxy):
 			"fetchone", "fetchmany", "fetchall", "nextset", "setinputsizes", "setoutputsize")
 		return type("CursorProxy", (Proxy,), {
 			"_inner": threadpool.apply(self._inner.cursor, None, None),
-			"_context": dict(self._context.items()+[("methods", methods),]) })()
+			"_context": dict(list(self._context.items())+[("methods", methods),]) })()
 
 class DbapiProxy(Proxy):
 	def connect(self, *args, **kwargs):
@@ -41,7 +41,7 @@ class DbapiProxy(Proxy):
 		methods = ("close", "commit", "rollback", "cursor")
 		return type("ConnectionProxy", (ConnectionProxy,), {
 			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
-			"_context": dict(self._context.items()+[("methods", methods), ("threadpool", threadpool)]) })()
+			"_context": dict(list(self._context.items())+[("methods", methods), ("threadpool", threadpool)]) })()
 
 class ProxyDialect(default.DefaultDialect):
 	_inner = None
@@ -83,9 +83,13 @@ bundled_drivers = {
 	"sybase":"pysybase pyodbc".split()
 	}
 for db, drivers in bundled_drivers.items():
-	globals()[dialect_name(db)] = dialect_maker(db, None)
-	for driver in drivers:
-		globals()[dialect_name(db,driver)] = dialect_maker(db, driver)
+	try:
+		globals()[dialect_name(db)] = dialect_maker(db, None)
+		for driver in drivers:
+			globals()[dialect_name(db,driver)] = dialect_maker(db, driver)
+	except:
+		# drizzle was removed in sqlalchemy v1.0
+		pass
 
 def patch_all():
 	for db, drivers in bundled_drivers.items():
