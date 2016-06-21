@@ -53,6 +53,11 @@ class ProxyDialect(default.DefaultDialect):
 			"_inner": cls._inner.dbapi(),
 			"_context": cls._context })()
 
+	def on_connect(self):
+		def on_connect(conn):
+			super(ProxyDialect, self).on_connect()(conn._inner)
+		return on_connect
+
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
 
