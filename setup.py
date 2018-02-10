@@ -7,6 +7,7 @@ setup(name="sqlalchemy_gevent",
 	author_email="hiroaki.kawai@gmail.com",
 	py_modules=["sqlalchemy_gevent",],
 	install_requires = ["sqlalchemy", "gevent>=1.0"],
+	test_suite = "tests",
 	entry_points = ''' 
 [sqlalchemy.dialects]
 gevent_drizzle=sqlalchemy_gevent:DrizzleDialect
