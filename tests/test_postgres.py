@@ -4,12 +4,13 @@ import uuid
 
 opts = dict(
 	POSTGRES_PASSWORD=None,
-	DBHOST="127.0.0.1",
+	POSTGRES_HOST=None,
 	MODE="direct"
 )
 opts.update(os.environ)
 
 class Postgres(unittest.TestCase):
+	@unittest.skipIf(opts.get("POSTGRES_HOST") is None, "POSTGRES_HOST required")
 	@unittest.skipIf(opts.get("MODE")!="direct", "runs if MODE=direct")
 	def test_connect(self):
 		import sqlalchemy
@@ -18,11 +19,12 @@ class Postgres(unittest.TestCase):
 		else:
 			opts["cred"] = "postgres"
 		
-		e = sqlalchemy.create_engine("gevent_postgresql+psycopg2://{cred:}@{DBHOST:}/postgres".format(**opts),
+		e = sqlalchemy.create_engine("gevent_postgresql+psycopg2://{cred:}@{POSTGRES_HOST:}/postgres".format(**opts),
 			isolation_level="AUTOCOMMIT")
 		self.do_sql(e)
 		self.do_uuid(e)
 
+	@unittest.skipIf(opts.get("POSTGRES_HOST") is None, "POSTGRES_HOST required")
 	@unittest.skipIf(opts.get("MODE")!="patch", "runs if MODE=patch")
 	def test_connect_patched(self):
 		import sqlalchemy
@@ -35,7 +37,7 @@ class Postgres(unittest.TestCase):
 		else:
 			opts["cred"] = "postgres"
 		
-		e = sqlalchemy.create_engine("postgresql+psycopg2://{cred:}@{DBHOST:}/postgres".format(**opts),
+		e = sqlalchemy.create_engine("postgresql+psycopg2://{cred:}@{POSTGRES_HOST:}/postgres".format(**opts),
 			isolation_level="AUTOCOMMIT")
 		self.do_sql(e)
 		self.do_uuid(e)

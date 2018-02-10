@@ -5,9 +5,9 @@ install:
   - pip install .
   - pip install -r test-requirements.txt
 script:
-  - MODE=direct pytest
-  - MODE=patch pytest
+  - POSTGRES_HOST=localhost MODE=direct pytest
+  - POSTGRES_HOST=localhost MODE=patch pytest
   - psql -c "alter role postgres with password 'tiger'" -U postgres
-  - MODE=direct POSTGRES_PASSWORD=tiger pytest
-  - MODE=patch POSTGRES_PASSWORD=tiger pytest
+  - POSTGRES_HOST=localhost MODE=direct POSTGRES_PASSWORD=tiger pytest
+  - POSTGRES_HOST=localhost MODE=patch POSTGRES_PASSWORD=tiger pytest
 
