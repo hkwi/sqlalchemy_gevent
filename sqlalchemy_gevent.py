@@ -33,11 +33,13 @@ class ConnectionProxy(Proxy):
 			"_inner": threadpool.apply(self._inner.cursor, None, None),
 			"_context": dict(list(self._context.items())+[("methods", methods),]) })()
 
+single_pool = gevent.threadpool.ThreadPool(1)
+
 class DbapiProxy(Proxy):
 	def connect(self, *args, **kwargs):
 		threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
 		if self._context.get("single_thread_connection"):
-			threadpool = gevent.threadpool.ThreadPool(1)
+			threadpool = single_pool
 		methods = ("close", "commit", "rollback", "cursor")
 		return type("ConnectionProxy", (ConnectionProxy,), {
 			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
@@ -55,7 +57,9 @@ class ProxyDialect(default.DefaultDialect):
 
 	def on_connect(self):
 		def on_connect(conn):
-			super(ProxyDialect, self).on_connect()(conn._inner)
+			super_on_connect = super(ProxyDialect, self).on_connect()
+			if super_on_connect:
+				super_on_connect(conn._inner)
 		return on_connect
 
 def dialect_name(*args):
