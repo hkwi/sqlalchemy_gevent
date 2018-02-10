@@ -19,6 +19,7 @@ class Sqlite(unittest.TestCase):
 	def test_connect_patched(self):
 		import sqlalchemy
 		import sqlalchemy_gevent
+		sqlalchemy_gevent.patch_all()
 		e = sqlalchemy.create_engine("sqlite:///demo.db")
 		self.do_sql(e)
 
