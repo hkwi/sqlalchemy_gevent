@@ -29,18 +29,17 @@ class Postgres(unittest.TestCase):
 	def test_connect_patched(self):
 		import sqlalchemy
 		import sqlalchemy_gevent
-		import psycopg2.extras
 		sqlalchemy_gevent.patch_all()
-		psycopg2.extras.register_uuid()
 		if opts["POSTGRES_PASSWORD"]:
 			opts["cred"] = "postgres:{POSTGRES_PASSWORD:}".format(**opts)
 		else:
 			opts["cred"] = "postgres"
 		
 		e = sqlalchemy.create_engine("postgresql+psycopg2://{cred:}@{POSTGRES_HOST:}/postgres".format(**opts),
-			isolation_level="AUTOCOMMIT")
-		self.do_sql(e)
-		self.do_uuid(e)
+			pool_size=20)
+		con = e.connect().execution_options(autocommit=True)
+		self.do_sql(con)
+		self.do_uuid(con)
 
 	def do_sql(self, e):
 		e.execute("CREATE TABLE a(k VARCHAR PRIMARY KEY, v VARCHAR)")
