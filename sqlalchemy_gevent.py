@@ -45,7 +45,7 @@ class DbapiProxy(Proxy):
 			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
 			"_context": dict(list(self._context.items())+[("methods", methods), ("threadpool", threadpool)]) })()
 
-class ProxyDialect(default.DefaultDialect):
+class ProxyDialect(interfaces.Dialect):
 	_inner = None
 	_context = None
 	
@@ -54,13 +54,9 @@ class ProxyDialect(default.DefaultDialect):
 		return type("DbapiProxy", (DbapiProxy,), {
 			"_inner": cls._inner.dbapi(),
 			"_context": cls._context })()
-
-	def on_connect(self):
-		def on_connect(conn):
-			super_on_connect = super(ProxyDialect, self).on_connect()
-			if super_on_connect:
-				super_on_connect(conn._inner)
-		return on_connect
+	
+	def __getattr__(self, name):
+		return getattr(self._inner, name)
 
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
