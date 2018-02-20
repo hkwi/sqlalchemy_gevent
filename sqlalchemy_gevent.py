@@ -1,6 +1,5 @@
-from sqlalchemy.engine import default
+from sqlalchemy.engine import interfaces
 from sqlalchemy.dialects import registry
-import sqlalchemy.dialects.sqlite
 import gevent
 import gevent.threadpool
 import importlib
