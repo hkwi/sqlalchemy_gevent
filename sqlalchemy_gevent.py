@@ -55,7 +55,15 @@ class ProxyDialect(interfaces.Dialect):
 			"_context": cls._context })()
 	
 	def __getattr__(self, name):
-		return getattr(self._inner, name)
+		obj = getattr(self._inner, name)
+		if callable(obj):
+			unwrap = lambda a._inner if isinstance(a, Proxy) else a
+			def obj_proxy(*args, **kwargs):
+				args = [unwrap(a) for a in args]
+				kwargs = {k:unwrap(a) for k,a in kwargs.items()}
+				return obj(*args, **kwargs)
+			return obj_proxy
+		return obj
 
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
