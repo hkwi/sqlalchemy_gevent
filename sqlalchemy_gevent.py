@@ -1,3 +1,4 @@
+import inspect
 from sqlalchemy.engine import default
 from sqlalchemy.dialects import registry
 import sqlalchemy.dialects.sqlite
@@ -45,19 +46,6 @@ class DbapiProxy(Proxy):
 			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
 			"_context": dict(list(self._context.items())+[("methods", methods), ("threadpool", threadpool)]) })()
 
-dialect_tmpl = '''
-class {name:}Dialect(default.DefaultDialect):
-	def __init__(self, {args:}):
-		super({name:}Dialect, self).__init__({params:})
-	
-	@classmethod
-	def dbapi(cls):
-		return type("{name:}DbapiProxy", (DbapiProxy,), {
-			"_inner": dbapi(),
-			"_context": context})()
-
-'''
-
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
 
@@ -72,12 +60,16 @@ def dialect_maker(db, driver):
 	if db == "sqlite": # pysqlite dbapi connection requires single threaded
 		context["single_thread_connection"] = True
 	
-	params = inspect.signature(dialect).parameters
-	code = dialect_tmpl.format(name=class_name,
-		args=",".join([str(v) for v in params.values()]),
-		params=",".join([v for v in params.keys()]),
-	)
-	return eval(code, dict(dbapi=dialect.dbapi, context=context))
+	spec = inspect.getargspec(dialect)
+	formatted_args = inspect.formatargspec(*spec).lstrip("(").rstrip(")")
+	
+	code = "lambda {args:}: super({name:}, self).__init__({args:})".format(
+		name=class_name, args= formatted_args)
+	attrs = dict(__init__=eval(code), context=context)
+	if hasattr(dialect, "dbapi"):
+		attrs["dbapi"] = dialect.dbapi
+	
+	return type(class_name, (default.DefaultDialect,), attrs)
 
 bundled_drivers = {
 	"drizzle":"mysqldb".split(),
