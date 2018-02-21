@@ -45,22 +45,18 @@ class DbapiProxy(Proxy):
 			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
 			"_context": dict(list(self._context.items())+[("methods", methods), ("threadpool", threadpool)]) })()
 
-class ProxyDialect(default.DefaultDialect):
-	_inner = None
-	_context = None
+dialect_tmpl = '''
+class {name:}Dialect(default.DefaultDialect):
+	def __init__(self, {args:}):
+		super({name:}Dialect, self).__init__({params:})
 	
 	@classmethod
 	def dbapi(cls):
-		return type("DbapiProxy", (DbapiProxy,), {
-			"_inner": cls._inner.dbapi(),
-			"_context": cls._context })()
+		return type("{name:}DbapiProxy", (DbapiProxy,), {
+			"_inner": dbapi(),
+			"_context": context})()
 
-	def on_connect(self):
-		def on_connect(conn):
-			super_on_connect = super(ProxyDialect, self).on_connect()
-			if super_on_connect:
-				super_on_connect(conn._inner)
-		return on_connect
+'''
 
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
@@ -76,10 +72,12 @@ def dialect_maker(db, driver):
 	if db == "sqlite": # pysqlite dbapi connection requires single threaded
 		context["single_thread_connection"] = True
 	
-	return type(class_name,
-		(ProxyDialect, dialect), {
-		"_inner": dialect,
-		"_context": context })
+	params = inspect.signature(dialect).parameters
+	code = dialect_tmpl.format(name=class_name,
+		args=",".join([str(v) for v in params.values()]),
+		params=",".join([v for v in params.keys()]),
+	)
+	return eval(code, dict(dbapi=dialect.dbapi, context=context))
 
 bundled_drivers = {
 	"drizzle":"mysqldb".split(),
