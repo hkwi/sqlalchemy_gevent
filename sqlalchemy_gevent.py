@@ -99,11 +99,11 @@ class DialectProxy(object):
 	
 	def __getattr__(self, name):
 		obj = getattr(self._inner, name)
-		if name == "dbapi":
-			return dbapi_factory_proxy(self._tp_factory)(obj)
-		elif name == "get_dialect_cls":
+		if name == "get_dialect_cls": # Dialect
 			return lambda *args:self
-		elif name == "on_connect":
+		elif name == "dbapi": # DefaultDialect
+			return dbapi_factory_proxy(self._tp_factory)(obj)
+		elif name == "on_connect": # DefaultDialect
 			return dialect_on_connect_proxy(self._tp_factory)(obj)
 		else:
 			return obj
