@@ -1,10 +1,11 @@
-from sqlalchemy.engine import default
+import sqlalchemy.engine
 from sqlalchemy.dialects import registry
 import sqlalchemy.dialects.sqlite
 import gevent
 import gevent.threadpool
 import importlib
 import functools
+from sqlalchemy.engine import interfaces
 
 def call_in_gevent(tp_factory):
 	def wraps(func):
@@ -18,41 +19,82 @@ def call_in_gevent(tp_factory):
 		return proxy
 	return wraps
 
-def unproxy_call(func):
-	@functools.wraps(func)
-	def wraps(*args, **kwargs):
-		f = lambda x: x._inner if isinstance(x, Proxy) else x
-		args = [f(a) for a in args]
-		kwargs = {k:f(v) for k,v in kwargs.items()}
-		return func(*args, **kwargs)
-	return wraps
-
 class Proxy(object):
-	_dbapi_methods = tuple()
+	_intercept = dict()
 	
-	def __init__(self, inner, tp_factory=None):
+	def __init__(self, inner):
 		self._inner = inner
-		self._tp_factory = tp_factory
 	
 	def __getattr__(self, name):
 		obj = getattr(self._inner, name)
-		if name in self._dbapi_methods:
-			return call_in_gevent(self._tp_factory)(obj)
-		elif callable(obj):
-			return call_in_gevent(self._tp_factory)(unproxy_call(obj))
+		if name in self._intercept:
+			return self._intercept[name](obj)
 		else:
 			return obj
 
-class CursorProxy(Proxy):
-	_dbapi_methods = ("callproc", "close", "execute", "executemany",
-		"fetchone", "fetchmany", "fetchall", "nextset", "setinputsizes", "setoutputsize")
-
-class ConnectionProxy(Proxy):
-	_dbapi_methods = ("close", "commit", "rollback", "cursor")
+def cursor_proxy(tp_factory):
+	g = call_in_gevent(tp_factory)
+	ic = {k:g for k in ("callproc", "close", "execute", "executemany", "fetchone",
+		"fetchmany", "fetchall", "nextset", "setinputsizes", "setoutputsize")}
 	
-	def cursor(self):
-		obj = call_in_gevent(self._tp_factory)(self._inner.cursor)()
-		return CursorProxy(obj, self._tp_factory)
+	def proxy(func):
+		@functools.wraps(func)
+		def wraps(*args, **kwargs):
+			cur = g(func)(*args, **kwargs)
+			return type("CursorProxy", (Proxy,), {"_intercept":ic})(cur)
+		return wraps
+	return proxy
+
+def connection_proxy(tp_factory):
+	g = call_in_gevent(tp_factory)
+	ic = {k:g for k in ("close", "commit", "rollback")}
+	ic["cursor"] = cursor_proxy(tp_factory)
+	
+	def proxy(func):
+		@functools.wraps(func)
+		def wraps(*args, **kwargs):
+			con = g(func)(*args, **kwargs)
+			return type("ConnectionProxy", (Proxy,), {"_intercept":ic})(con)
+		return wraps
+	return proxy
+
+def dbapi_proxy(tp_factory):
+	g = call_in_gevent(tp_factory)
+	ic = dict(connect= connection_proxy(tp_factory))
+	return type("DbapiProxy", (Proxy,), {"_intercept":ic})
+
+def dbapi_factory_proxy(tp_factory):
+	def proxy(func):
+		@functools.wraps(func)
+		def wraps(*args, **kwargs):
+			m = func(*args, **kwargs) # obtain dbapi module
+			return dbapi_proxy(tp_factory)(m)
+		return wraps
+	return proxy
+
+class DialectProxy(object):
+	_tp_factory = None
+	
+	def __init__(self, inner):
+		self._inner = inner
+	
+	def __getattr__(self, name):
+		obj = getattr(self._inner, name)
+		if name == "dbapi":
+			return dbapi_factory_proxy(self._tp_factory)(obj)
+		elif name == "get_dialect_cls":
+			return lambda *args:self
+		else:
+			return obj
+
+def dialect_init_wrap(tp_factory):
+	def proxy(func):
+		@functools.wraps(func)
+		def wraps(self, *args, **kwargs):
+			inner = call_in_gevent(tp_factory)(func)(*args, **kwargs)
+			return type(self.__name__, (DialectProxy,), {"_tp_factory":staticmethod(tp_factory)})(inner)
+		return wraps
+	return proxy
 
 single_pool = gevent.threadpool.ThreadPool(1)
 
@@ -66,30 +108,14 @@ def dialect_maker(db, driver):
 	
 	dialect = importlib.import_module("sqlalchemy.dialects.%s.%s" % (db, driver)).dialect
 	
-	def wrap_connect(func):
-		@functools.wraps(func)
-		def wraps(*args, **kwargs):
-			tp_factory = lambda: gevent.get_hub().threadpool
-			if db == "sqlite": # pysqlite dbapi connection requires single threaded
-				tp_factory = lambda: single_pool
-			
-			con = call_in_gevent(tp_factory)(func)(*args, **kwargs)
-			return ConnectionProxy(con, tp_factory)
-		return wraps
+	tp_factory = lambda: gevent.get_hub().threadpool
+	if db == "sqlite": # pysqlite dbapi connection requires single threaded
+		tp_factory = lambda: single_pool
 	
-	def wrap_dbapi(func):
-		@functools.wraps(func)
-		def wrap(*args, **kwargs):
-			m = func(*args, **kwargs)
-			p = Proxy(m)
-			p.connect = wrap_connect(m.connect)
-			return p
-		return wrap
-	
-	attrs = {"_inner": dialect}
-	if hasattr(dialect, "dbapi"):
-		attrs["dbapi"] = wrap_dbapi(dialect.dbapi)
-	return type(class_name, (default.DefaultDialect, Proxy), attrs)
+	return type(dialect.__name__, (DialectProxy,), {
+		"_tp_factory":staticmethod(tp_factory),
+		"__call__":dialect_init_wrap(tp_factory)(dialect)
+	})(dialect)
 
 bundled_drivers = {
 	"drizzle":"mysqldb".split(),
