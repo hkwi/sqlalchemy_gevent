@@ -72,6 +72,25 @@ def dbapi_factory_proxy(tp_factory):
 		return wraps
 	return proxy
 
+def dialect_on_connect_proxy(tp_factory):
+	def cb_proxy(func):
+		@functools.wraps(func)
+		def wraps(*args, **kwargs):
+			f = lambda x: x._inner if isinstance(x, Proxy) else x
+			args = [f(a) for a in args]
+			kwargs = {k:f(v) for k,v in kwargs.items()}
+			return call_in_gevent(tp_factory)(func)(*args, **kwargs)
+		return wraps
+	
+	def proxy(func):
+		@functools.wraps(func)
+		def wraps(*args, **kwargs):
+			cb = func(*args, **kwargs)
+			if cb:
+				return cb_proxy(cb)
+		return wraps
+	return proxy
+
 class DialectProxy(object):
 	_tp_factory = None
 	
@@ -84,6 +103,8 @@ class DialectProxy(object):
 			return dbapi_factory_proxy(self._tp_factory)(obj)
 		elif name == "get_dialect_cls":
 			return lambda *args:self
+		elif name == "on_connect":
+			return dialect_on_connect_proxy(self._tp_factory)(obj)
 		else:
 			return obj
 

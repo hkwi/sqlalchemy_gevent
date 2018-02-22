@@ -12,6 +12,7 @@ class Sqlite(unittest.TestCase):
 	@unittest.skipIf(opts.get("MODE")!="direct", "runs if MODE=direct")
 	def test_connect(self):
 		import sqlalchemy
+		import sqlalchemy_gevent
 		e = sqlalchemy.create_engine("gevent_sqlite:///demo.db")
 		self.do_sql(e)
 
