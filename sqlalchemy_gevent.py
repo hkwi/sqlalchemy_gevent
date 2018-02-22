@@ -4,63 +4,57 @@ import sqlalchemy.dialects.sqlite
 import gevent
 import gevent.threadpool
 import importlib
+import functools
 
-class FuncProxy(object):
-	def __init__(self, func, threadpool):
-		self.func = func
-		self.threadpool = threadpool
-	
-	def __call__(self, *args, **kwargs):
-		return self.threadpool.apply_e(BaseException, self.func, args, kwargs)
+def call_in_gevent(tp_factory):
+	def wraps(func):
+		if tp_factory is None:
+			return func
+		
+		@functools.wraps(func)
+		def proxy(*arg, **kwargs):
+			threadpool = tp_factory()
+			return threadpool.apply_e(BaseException, func, args, kwargs)
+		return proxy
+	return wraps
+
+def unproxy_call(func):
+	@functools.wraps(func)
+	def wraps(*args, **kwargs):
+		f = lambda x: x.__inner if isinstance(x, Proxy) else x
+		args = [f(a) for a in args]
+		kwargs = {k:f(v) for k,v in kwargs.items()}
+		return func(*args, **kwargs)
+	return wraps
 
 class Proxy(object):
-	_inner = None
-	_context = None
+	__dbapi_methods__ = tuple()
+	
+	def __init__(self, inner, tp_factory=None):
+		self.__inner = inner
+		self.__tp_factory = tp_factory
+	
 	def __getattr__(self, name):
-		obj = getattr(self._inner, name)
-		if name in self._context.get("methods",()):
-			threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
-			return FuncProxy(obj, threadpool)
+		obj = getattr(self.__inner, name)
+		if name in self.__dbapi_methods__:
+			return call_in_gevent(self.__tp_factory)(obj)
+		elif callable(obj):
+			return call_in_gevent(self.__tp_factory)(unproxy_call(obj))
 		else:
 			return obj
 
+class CursorProxy(Proxy):
+	__dbapi_methods__ = ("callproc", "close", "execute", "executemany",
+		"fetchone", "fetchmany", "fetchall", "nextset", "setinputsizes", "setoutputsize")
+
 class ConnectionProxy(Proxy):
+	__dbapi_methods__ = ("close", "commit", "rollback", "cursor")
+	
 	def cursor(self):
-		threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
-		methods = ("callproc", "close", "execute", "executemany",
-			"fetchone", "fetchmany", "fetchall", "nextset", "setinputsizes", "setoutputsize")
-		return type("CursorProxy", (Proxy,), {
-			"_inner": threadpool.apply(self._inner.cursor, None, None),
-			"_context": dict(list(self._context.items())+[("methods", methods),]) })()
+		obj = self.__inner.cursor()
+		return CursorProxy(obj, self.__tp_factory)
 
 single_pool = gevent.threadpool.ThreadPool(1)
-
-class DbapiProxy(Proxy):
-	def connect(self, *args, **kwargs):
-		threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
-		if self._context.get("single_thread_connection"):
-			threadpool = single_pool
-		methods = ("close", "commit", "rollback", "cursor")
-		return type("ConnectionProxy", (ConnectionProxy,), {
-			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
-			"_context": dict(list(self._context.items())+[("methods", methods), ("threadpool", threadpool)]) })()
-
-class ProxyDialect(default.DefaultDialect):
-	_inner = None
-	_context = None
-	
-	@classmethod
-	def dbapi(cls):
-		return type("DbapiProxy", (DbapiProxy,), {
-			"_inner": cls._inner.dbapi(),
-			"_context": cls._context })()
-
-	def on_connect(self):
-		def on_connect(conn):
-			super_on_connect = super(ProxyDialect, self).on_connect()
-			if super_on_connect:
-				super_on_connect(conn._inner)
-		return on_connect
 
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
@@ -72,14 +66,30 @@ def dialect_maker(db, driver):
 	
 	dialect = importlib.import_module("sqlalchemy.dialects.%s.%s" % (db, driver)).dialect
 	
-	context = {}
-	if db == "sqlite": # pysqlite dbapi connection requires single threaded
-		context["single_thread_connection"] = True
+	def wrap_connect(func):
+		@functools.wraps(func)
+		def wraps(*args, **kwrags):
+			con = func(*args, **kwargs)
+			if db == "sqlite": # pysqlite dbapi connection requires single threaded
+				p = ConnectionProxy(con, single)
+			else:
+				p = ConnectionProxy(con, lambda: gevent.get_hub().threadpool)
+			return p
+		return wraps
 	
-	return type(class_name,
-		(ProxyDialect, dialect), {
-		"_inner": dialect,
-		"_context": context })
+	def wrap_dbapi(func):
+		@functools.wraps(func)
+		def wrap(*args, **kwargs):
+			m = func(*args, **kwrags)
+			p = Proxy(m)
+			p.connect = wrap_connect(m.connect)
+			return p
+		return wrap
+	
+	d = Proxy(dialect) # d is Dialect clazz
+	if hasattr(dialect, "dbapi"):
+		d.dbapi = wrap_dbapi(dialect.dbapi)
+	return d
 
 bundled_drivers = {
 	"drizzle":"mysqldb".split(),
@@ -94,9 +104,11 @@ bundled_drivers = {
 for db, drivers in bundled_drivers.items():
 	try:
 		globals()[dialect_name(db)] = dialect_maker(db, None)
+		registry.register("gevent_%s" % db, "sqlalchemy_gevent", dialect_name(db))
 		for driver in drivers:
 			globals()[dialect_name(db,driver)] = dialect_maker(db, driver)
-	except:
+			registry.register("gevent_%s.%s" % (db,driver), "sqlalchemy_gevent", dialect_name(db,driver))
+	except ImportError:
 		# drizzle was removed in sqlalchemy v1.0
 		pass
 
