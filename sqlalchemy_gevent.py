@@ -67,9 +67,10 @@ def dialect_maker(db, driver):
 		name=class_name, args= formatted_args)
 	attrs = dict(__init__=eval(code), context=context)
 	if hasattr(dialect, "dbapi"):
-		attrs["dbapi"] = dialect.dbapi
+		attrs["dbapi"] = lambda: type("%sDbapiProxy" % class_name, (DbapiProxy,),
+			dict(_inner=dialect.dbapi(), _context=context))()
 	
-	return type(class_name, (default.DefaultDialect,), attrs)
+	return type(class_name, (dialect,), attrs)
 
 bundled_drivers = {
 	"drizzle":"mysqldb".split(),
@@ -84,9 +85,12 @@ bundled_drivers = {
 for db, drivers in bundled_drivers.items():
 	try:
 		globals()[dialect_name(db)] = dialect_maker(db, None)
+		registry.register("gevent_%s" % db, "sqlalchemy_gevent", dialect_name(db))
 		for driver in drivers:
 			globals()[dialect_name(db,driver)] = dialect_maker(db, driver)
-	except:
+			registry.register("gevent_%s.%s" % (db,driver), "sqlalchemy_gevent", dialect_name(db,driver))
+	except Exception as e:
+		print(e)
 		# drizzle was removed in sqlalchemy v1.0
 		pass
 
