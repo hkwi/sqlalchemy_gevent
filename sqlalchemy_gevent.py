@@ -5,46 +5,42 @@ import sqlalchemy.dialects.sqlite
 import gevent
 import gevent.threadpool
 import importlib
+import functools
 
-class FuncProxy(object):
-	def __init__(self, func, threadpool):
-		self.func = func
-		self.threadpool = threadpool
-	
-	def __call__(self, *args, **kwargs):
-		return self.threadpool.apply_e(BaseException, self.func, args, kwargs)
+def call_in_gevent(thread_pool_factory, return_wrap=lambda x:x):
+	def capture(func):
+		@functools.wraps(func)
+		def call_func(*args, **kwargs):
+			threadpool = thread_pool_factory()
+			return return_wrap(threadpool.apply_e(BaseException, func, args, kwargs))
+		return call_func
+	return capture
 
-class Proxy(object):
-	_inner = None
-	_context = None
-	def __getattr__(self, name):
-		obj = getattr(self._inner, name)
-		if name in self._context.get("methods",()):
-			threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
-			return FuncProxy(obj, threadpool)
-		else:
-			return obj
-
-class ConnectionProxy(Proxy):
-	def cursor(self):
-		threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
+def cursor_wrap(tp_factory):
+	def wrap(obj):
 		methods = ("callproc", "close", "execute", "executemany",
 			"fetchone", "fetchmany", "fetchall", "nextset", "setinputsizes", "setoutputsize")
-		return type("CursorProxy", (Proxy,), {
-			"_inner": threadpool.apply(self._inner.cursor, None, None),
-			"_context": dict(list(self._context.items())+[("methods", methods),]) })()
+		for method in methods:
+			setattr(obj, method, call_in_gevent(tp_factory)(getattr(obj, method)))
+		return obj
+	return wrap
+
+def connection_wrap(tp_factory):
+	def wrap(obj):
+		methods = ("close", "commit", "rollback", "cursor")
+		for method in methods:
+			setattr(obj, method, call_in_gevent(tp_factory)(getattr(obj, method)))
+		obj.cursor = call_in_gevent(tp_factory, cursor_wrap(tp_factory))(obj.cursor)
+		return obj
+	return wrap
+
+def dbapi_wrap(tp_factory):
+	def wrap(obj):
+		obj.connect = call_in_gevent(tp_factory, connection_wrap(tp_factory))(obj.connect)
+		return obj
+	return wrap
 
 single_pool = gevent.threadpool.ThreadPool(1)
-
-class DbapiProxy(Proxy):
-	def connect(self, *args, **kwargs):
-		threadpool = self._context.get("threadpool", gevent.get_hub().threadpool)
-		if self._context.get("single_thread_connection"):
-			threadpool = single_pool
-		methods = ("close", "commit", "rollback", "cursor")
-		return type("ConnectionProxy", (ConnectionProxy,), {
-			"_inner": threadpool.apply(self._inner.connect, args, kwargs),
-			"_context": dict(list(self._context.items())+[("methods", methods), ("threadpool", threadpool)]) })()
 
 def dialect_name(*args):
 	return "".join([s[0].upper()+s[1:] for s in args if s])+"Dialect"
@@ -56,21 +52,16 @@ def dialect_maker(db, driver):
 	
 	dialect = importlib.import_module("sqlalchemy.dialects.%s.%s" % (db, driver)).dialect
 	
-	context = {}
+	tp_factory = lambda: gevent.get_hub().threadpool
 	if db == "sqlite": # pysqlite dbapi connection requires single threaded
-		context["single_thread_connection"] = True
+		tp_factory = lambda: single_pool
 	
-	spec = inspect.getargspec(dialect)
-	formatted_args = inspect.formatargspec(*spec).lstrip("(").rstrip(")")
-	
-	code = "lambda {args:}: super({name:}, self).__init__({args:})".format(
-		name=class_name, args= formatted_args)
-	attrs = dict(__init__=eval(code), context=context)
+	attrs = {}
 	if hasattr(dialect, "dbapi"):
-		attrs["dbapi"] = lambda: type("%sDbapiProxy" % class_name, (DbapiProxy,),
-			dict(_inner=dialect.dbapi(), _context=context))()
+		attrs["dbapi"]= lambda: dbapi_wrap(tp_factory)(dialect.dbapi())
 	
 	return type(class_name, (dialect,), attrs)
+
 
 bundled_drivers = {
 	"drizzle":"mysqldb".split(),
@@ -89,8 +80,7 @@ for db, drivers in bundled_drivers.items():
 		for driver in drivers:
 			globals()[dialect_name(db,driver)] = dialect_maker(db, driver)
 			registry.register("gevent_%s.%s" % (db,driver), "sqlalchemy_gevent", dialect_name(db,driver))
-	except Exception as e:
-		print(e)
+	except ImportError as e:
 		# drizzle was removed in sqlalchemy v1.0
 		pass
 
